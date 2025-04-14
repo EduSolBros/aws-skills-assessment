@@ -1,34 +1,33 @@
 
-## Scenario #3: Preventing API Gateway Bypass
+# Scenario #3: Preventing API Gateway Bypass
 
-### Solution Options
+Al desplegar las APIs detrás de CloudFront y un WAF global para filtrar ataques, todo parece estar bien, pero nos olvidamos que si alguien conoce la URL específica del API Gateway regional, **puede saltarse** CloudFront y llegar directo, evitando así las reglas del WAF. Para abordar ello planteo las siguientes opciones:
 
-**Option 1: Resource Policy Whitelisting**
+----------
 
-```tf
-resource "aws_api_gateway_rest_api_policy" "strict" {
-  rest_api_id = aws_api_gateway_rest_api.external.id
-  policy = <<EOF
-{
-  "Version":"2012-10-17",
-  "Statement":[{
-    "Effect":"Deny",
-    "Action":"execute-api:Invoke",
-    "Resource":"arn:aws:execute-api:${var.aws_region}:${var.account_id}:${aws_api_gateway_rest_api.external.id}/*/*/*",
-    "Condition":{
-      "StringNotEquals":{"aws:SourceVpce":"${aws_vpc_endpoint.apigw_private.id}"}
-    }
-  }]
-}
-EOF
-}
-```
+## Opción 1: **Bloquear con Resource Policy** (Whitelisting)
 
-**Option 2: Custom Authorizer + Mutual TLS**
+En AWS API Gateway, puedes configurar una **API Resource Policy** que deniegue cualquier petición que **no venga** de un VPC Endpoint determinado.Ejemplo: apigw_policy.tf
 
--   Require mTLS certificates for any direct calls.
+-   Impone una política que dice: “Solo permito tráfico cuyo origen sea mi VPC Endpoint privado”.
     
--   Use a Lambda authorizer to validate a header injected by CloudFront.
-    
+-   Si alguien descubre la URL directa de tu API Gateway y la invoca desde fuera de ese endpoint, AWS rechazará la llamada (status 403, ‘Access Denied’).
 
-> _Expert tip:_ Combining both policies and authorizers yields a defense-in-depth posture.
+## Opción 2: **Custom Authorizer + Mutual TLS**
+
+Hay organizaciones que prefieren añadir **mTLS** (mutual TLS) para asegurarse de que el cliente también presenta un certificado válido. Además, se puede implementar un **Lambda authorizer** que revise un token, cabecera o certificado:
+
+1.  **mTLS:**
+    
+    -   Requieres un certificado de cliente. El servidor (API GW) y el cliente se validan mutuamente.
+        
+    -   Si alguien intenta conectar sin un cert autorizado, no podrá establecer sesión.
+        
+2.  **Lambda Authorizer:**
+    
+    -   Intercepta las llamadas antes de llegar a tu backend.
+        
+    -   Puedes programarlo para chequear que un encabezado (inserto por CloudFront o WAF) esté presente y sea válido. Si no existe, la petición se bloquea.
+        
+
+> A veces conviene combinar ambos enfoques para una estrategia de “defense in depth”: tienes la Resource Policy que cierra cualquier acceso “por la libre”, **y** un Lambda Authorizer con mTLS que añade otro candado más si alguien logra colarse por otro camino.
